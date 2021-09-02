@@ -1,0 +1,18 @@
+[package]
+name = "pixel-sort"
+version = "0.1.0"
+authors = ["Cyberduc-k <tttymo@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "pixel-sort"
+path = "bin/main.rs"
+
+[dependencies]
+image = "0.23.6"
+# ffmpeg-dev = "0.3.8"
+indicatif = "0.15.0"
+clap = "2.33.1"
+regex = "1.3.9"
+rand = "0.7.3"
+lazy_static = "1.4.0"
