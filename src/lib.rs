@@ -8,10 +8,13 @@ pub struct Opts {
     pub mask_alpha: bool,
     pub invert: bool,
     pub reverse: bool,
+    pub split: bool,
     pub min: usize,
     pub max: usize,
     pub angle: f64,
     pub vertical: bool,
+    pub resize: Option<Scale>,
+    pub internal_scale: Option<Scale>,
 }
 
 pub enum SortType {
@@ -24,6 +27,12 @@ pub enum IntervalType {
     Threshold,
 }
 
+#[derive(Clone, Copy)]
+pub enum Scale {
+    Pixels(u32, u32),
+    Multiply(f32),
+}
+
 impl Default for Opts {
     fn default() -> Self {
         Opts {
@@ -33,10 +42,22 @@ impl Default for Opts {
             mask_alpha: false,
             invert: false,
             reverse: false,
+            split: false,
             min: 0,
             max: 255,
             angle: 0.0,
             vertical: false,
+            resize: None,
+            internal_scale: None,
+        }
+    }
+}
+
+impl Scale {
+    pub fn calc(self, w: u32, h: u32) -> (u32, u32) {
+        match self {
+            Scale::Pixels(w, h) => (w, h),
+            Scale::Multiply(m) => ((w as f32 * m) as u32, (h as f32 * m) as u32),
         }
     }
 }

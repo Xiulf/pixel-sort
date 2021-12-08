@@ -6,6 +6,12 @@ fn main() {
         .arg(Arg::with_name("sequence").long("seq"))
         .arg(Arg::with_name("input").takes_value(true).required(true))
         .arg(Arg::with_name("output").takes_value(true).required(true))
+        .arg(Arg::with_name("resize").takes_value(true).long("resize"))
+        .arg(
+            Arg::with_name("internal-scale")
+                .takes_value(true)
+                .long("internal-scale"),
+        )
         .arg(
             Arg::with_name("min")
                 .long("min")
@@ -20,6 +26,7 @@ fn main() {
         )
         .arg(Arg::with_name("angle").long("angle").takes_value(true))
         .arg(Arg::with_name("vertical").long("vertical"))
+        .arg(Arg::with_name("split").long("split"))
         .arg(
             Arg::with_name("fn")
                 .long("fn")
@@ -90,6 +97,7 @@ fn main() {
         mask_alpha: false,
         invert: matches.occurrences_of("invert") >= 1,
         reverse: matches.occurrences_of("reverse") >= 1,
+        split: matches.occurrences_of("split") >= 1,
         min: matches.value_of("min").unwrap().parse().unwrap(),
         max: matches.value_of("max").unwrap().parse().unwrap(),
         angle: matches
@@ -97,6 +105,8 @@ fn main() {
             .and_then(|a| a.parse().ok())
             .unwrap_or(0.0),
         vertical: matches.occurrences_of("vertical") >= 1,
+        resize: matches.value_of("resize").and_then(parse_scale),
+        internal_scale: matches.value_of("internal-scale").and_then(parse_scale),
     };
 
     let input = matches.value_of("input").unwrap();
@@ -111,7 +121,7 @@ fn main() {
         );
 
         for (i, input) in FileSeq::new(input).enumerate() {
-            pb.set_prefix(&format!("Sorting {}", input));
+            pb.set_prefix(format!("Sorting `{}`", input));
             pb.set_position(0);
 
             let image = image::open(&input).unwrap();
@@ -121,18 +131,25 @@ fn main() {
             sorted.save(output).unwrap();
         }
     } else {
-        let pb = indicatif::ProgressBar::new(0).with_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("{prefix} [{bar:40.cyan/blue}] {pos::>5}/{len}")
-                .progress_chars("=> "),
-        );
+        pixel_sort::img::process_image(input, output, opts);
+    }
+}
 
-        pb.set_prefix(&format!("Sorting {}", input));
+fn parse_scale(s: &str) -> Option<Scale> {
+    if s.starts_with('x') {
+        let m = s[1..].parse().ok()?;
 
-        let image = image::open(input).expect(input);
-        let sorted = pixel_sort::img::sort_image(&pb, image, &opts);
+        Some(Scale::Multiply(m))
+    } else if s.ends_with('%') {
+        let m: f32 = s[..s.len()].parse().ok()?;
 
-        sorted.save(output).unwrap();
+        Some(Scale::Multiply(m / 100.0))
+    } else {
+        let (w, h) = s.split_once(':')?;
+        let w = w.parse().ok()?;
+        let h = h.parse().ok()?;
+
+        Some(Scale::Pixels(w, h))
     }
 }
 
