@@ -1,5 +1,5 @@
 use super::*;
-use image::{DynamicImage, GenericImageView, Rgba};
+use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 
@@ -55,6 +55,7 @@ pub fn process_image(input: impl AsRef<Path>, output: impl AsRef<Path>, opts: Op
 
         let mut image = image::open(input).unwrap();
         let mut resize = opts.resize;
+        let (iw, ih) = image.dimensions();
 
         if opts.vertical {
             pbo.inc(1);
@@ -64,19 +65,32 @@ pub fn process_image(input: impl AsRef<Path>, output: impl AsRef<Path>, opts: Op
 
         if let Some(scale) = opts.internal_scale {
             pbo.inc(1);
-
-            let (iw, ih) = image.dimensions();
-            let (sw, sh) = scale.calc(iw, ih);
-
             resize = resize.or(Some(Scale::Pixels(iw, ih)));
+
+            let (sw, sh) = scale.calc(iw, ih);
 
             if sw != iw || sh != ih {
                 pb.set_message("Resizing");
 
                 if opts.vertical {
-                    image = image.resize(sh, sw, image::imageops::FilterType::CatmullRom);
+                    image = image.resize_exact(sh, sw, image::imageops::FilterType::Triangle);
                 } else {
-                    image = image.resize(sw, sh, image::imageops::FilterType::CatmullRom);
+                    image = image.resize_exact(sw, sh, image::imageops::FilterType::Triangle);
+                }
+            }
+        } else if let Some(scale) = opts.resize {
+            pbo.inc(1);
+            resize = None;
+
+            let (sw, sh) = scale.calc(iw, ih);
+
+            if sw != iw || sh != ih {
+                pb.set_message("Resizing");
+
+                if opts.vertical {
+                    image = image.resize_exact(sh, sw, image::imageops::FilterType::Triangle);
+                } else {
+                    image = image.resize_exact(sw, sh, image::imageops::FilterType::Triangle);
                 }
             }
         }
@@ -93,16 +107,16 @@ pub fn process_image(input: impl AsRef<Path>, output: impl AsRef<Path>, opts: Op
         if let Some(scale) = resize {
             pbo.inc(1);
 
-            let (iw, ih) = res.dimensions();
+            let (nw, nh) = res.dimensions();
             let (sw, sh) = scale.calc(iw, ih);
 
-            if sw != iw || sh != ih {
+            if sw != nw || sh != nh {
                 pb.set_message("Resizing");
 
                 if opts.vertical {
-                    res = res.resize(sh, sw, image::imageops::FilterType::CatmullRom);
+                    res = res.resize_exact(sh, sw, image::imageops::FilterType::Lanczos3);
                 } else {
-                    res = res.resize(sw, sh, image::imageops::FilterType::CatmullRom);
+                    res = res.resize_exact(sw, sh, image::imageops::FilterType::Lanczos3);
                 }
             }
         }
@@ -122,7 +136,10 @@ pub fn process_image(input: impl AsRef<Path>, output: impl AsRef<Path>, opts: Op
     });
 
     bars.join_and_clear().unwrap();
-    thread.join().unwrap();
+
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 pub fn sort_image(pb: &ProgressBar, image: DynamicImage, opts: &Opts) -> DynamicImage {
@@ -130,6 +147,123 @@ pub fn sort_image(pb: &ProgressBar, image: DynamicImage, opts: &Opts) -> Dynamic
     let (width, height) = rgba.dimensions();
 
     match opts.sort_type {
+        SortType::Spiral => {
+            pb.set_length(u64::from(height / 2));
+            pb.tick();
+
+            let rgba_c = rgba.clone();
+
+            for i in 0..height / 2 {
+                let top = ((i + 1)..width - i).map(|x| (x, i));
+                let right = ((i + 1)..height - i).map(|y| (width - i - 1, y));
+                let bottom = (i..width - i - 1).map(|x| (x, height - i - 1)).rev();
+                let left = (i..height - i - 1).map(|y| (i, y)).rev();
+                let idxs = top
+                    .chain(right)
+                    .chain(bottom)
+                    .chain(left)
+                    .collect::<Vec<_>>();
+
+                let mut pixels = idxs
+                    .iter()
+                    .map(|(x, y)| rgba_c.get_pixel(*x, *y))
+                    .collect::<Vec<_>>();
+
+                sort_pixels(opts, &mut pixels[..], opts.sort_fn);
+
+                for ((x, y), px) in idxs.into_iter().zip(pixels) {
+                    rgba.put_pixel(x, y, *px);
+                }
+
+                pb.inc(1);
+            }
+        }
+        SortType::Circle { cx, cy } => {
+            let dist = |x: u32, y: u32| {
+                ((x as f64 - cx as f64).powi(2) + (y as f64 - cy as f64).powi(2)).sqrt()
+            };
+
+            let n = dist(0, 0)
+                .max(dist(0, height))
+                .max(dist(width, 0))
+                .max(dist(width, height))
+                .ceil() as u32;
+
+            pb.set_length(n as u64);
+            pb.tick();
+
+            let rgba_c = rgba.clone();
+            let mut written = vec![vec![false; height as usize]; width as usize];
+
+            for i in 0..n {
+                let idxs = circle_points(&rgba_c, cx, cy, i, opts.angle);
+                let mut pixels = idxs
+                    .iter()
+                    .map(|(x, y)| rgba_c.get_pixel(*x, *y))
+                    .collect::<Vec<_>>();
+
+                sort_pixels(opts, &mut pixels[..], opts.sort_fn);
+
+                for ((x, y), px) in idxs.into_iter().zip(pixels) {
+                    rgba.put_pixel(x, y, *px);
+                    written[x as usize][y as usize] = true;
+                }
+
+                pb.inc(1);
+            }
+
+            let rgba_c = rgba.clone();
+            let color_of_neighbours = |x: i32, y: i32| {
+                let neighbours = [
+                    (x - 1, y - 1),
+                    (x, y - 1),
+                    (x + 1, y - 1),
+                    (x - 1, y),
+                    (x + 1, y),
+                    (x - 1, y + 1),
+                    (x, y + 1),
+                    (x + 1, y + 1),
+                ]
+                .iter()
+                .filter(|(x, _)| (0..written.len() as i32).contains(x))
+                .filter(|(x, y)| (0..written[*x as usize].len() as i32).contains(y))
+                .filter(|(x, y)| written[*x as usize][*y as usize])
+                .map(|(x, y)| rgba_c.get_pixel(*x as u32, *y as u32))
+                .collect::<Vec<_>>();
+
+                let mut avg = Rgba([0.0, 0.0, 0.0, 0.0]);
+                let len = neighbours.len() as f64;
+
+                for pixel in neighbours {
+                    avg.0[0] += pixel.0[0] as f64;
+                    avg.0[1] += pixel.0[1] as f64;
+                    avg.0[2] += pixel.0[2] as f64;
+                    avg.0[3] += pixel.0[3] as f64;
+                }
+
+                avg.0[0] /= len;
+                avg.0[1] /= len;
+                avg.0[2] /= len;
+                avg.0[3] /= len;
+
+                Rgba([
+                    avg.0[0] as u8,
+                    avg.0[1] as u8,
+                    avg.0[2] as u8,
+                    avg.0[3] as u8,
+                ])
+            };
+
+            for (x, col) in written.iter().enumerate() {
+                for (y, val) in col.iter().enumerate() {
+                    if !*val {
+                        let col = color_of_neighbours(x as i32, y as i32);
+
+                        rgba.put_pixel(x as u32, y as u32, col);
+                    }
+                }
+            }
+        }
         SortType::Sine { amp, lam, offset } => {
             let (c_x, c_y, diag) = (
                 (width as f64 * 0.5).floor(),
@@ -264,6 +398,85 @@ pub fn sort_pixels(opts: &Opts, pixels: &mut [&Rgba<u8>], sort_fn: impl Fn(&[u8]
             reverse = !reverse;
         }
     }
+}
+
+fn circle_points(img: &RgbaImage, cx: u32, cy: u32, r: u32, angle: f64) -> Vec<(u32, u32)> {
+    let xr = 0..img.width();
+    let yr = 0..img.height();
+    let mut circle = Vec::new();
+    let mut point = |x: i32, y: i32| {
+        if xr.contains(&(x as u32)) && yr.contains(&(y as u32)) {
+            circle.push((x as u32, y as u32));
+        }
+    };
+
+    let mut circle_points = |cx: i32, cy: i32, x: i32, y: i32| {
+        if x == 0 {
+            point(cx, cy + y);
+            point(cx, cy - y);
+            point(cx + y, cy);
+            point(cx - y, cy);
+        } else if x == y {
+            point(cx + x, cy + y);
+            point(cx - x, cy + y);
+            point(cx + x, cy - y);
+            point(cx - x, cy - y);
+        } else if x < y {
+            point(cx + x, cy + y);
+            point(cx - x, cy + y);
+            point(cx + x, cy - y);
+            point(cx - x, cy - y);
+            point(cx + y, cy + x);
+            point(cx - y, cy + x);
+            point(cx + y, cy - x);
+            point(cx - y, cy - x);
+        }
+    };
+
+    let mut x = 0;
+    let mut y = r as i32;
+    let mut p = (5 - r as i32 * 4) / 4;
+
+    circle_points(cx as i32, cy as i32, x, y);
+
+    while x < y {
+        x += 1;
+        p += if p < 0 {
+            2 * x + 1
+        } else {
+            y -= 1;
+            2 * (x - y) + 1
+        };
+
+        circle_points(cx as i32, cy as i32, x, y);
+    }
+
+    circle.sort_by(|a, b| {
+        let a = ((a.1 as f64 - cy as f64)
+            .atan2(a.0 as f64 - cx as f64)
+            .to_degrees()
+            - 270.0
+            - angle)
+            % 360.0;
+
+        let b = ((b.1 as f64 - cy as f64)
+            .atan2(b.0 as f64 - cx as f64)
+            .to_degrees()
+            - 270.0
+            - angle)
+            % 360.0;
+
+        if a < b {
+            std::cmp::Ordering::Less
+        } else if a > b {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+
+    circle.dedup();
+    circle
 }
 
 fn interval_none(_: &Opts, _: &[&Rgba<u8>], _: usize) -> usize {

@@ -19,6 +19,8 @@ pub struct Opts {
 
 pub enum SortType {
     Linear,
+    Spiral,
+    Circle { cx: u32, cy: u32 },
     Sine { amp: f64, lam: f64, offset: f64 },
 }
 

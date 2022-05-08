@@ -54,6 +54,12 @@ fn main() {
         .arg(Arg::with_name("invert").long("invert"))
         .arg(Arg::with_name("reverse").long("reverse"))
         .subcommand(SubCommand::with_name("linear"))
+        .subcommand(SubCommand::with_name("spiral"))
+        .subcommand(
+            SubCommand::with_name("circle")
+                .arg(Arg::with_name("cx").takes_value(true).required(true))
+                .arg(Arg::with_name("cy").takes_value(true).required(true)),
+        )
         .subcommand(
             SubCommand::with_name("sine")
                 .arg(Arg::with_name("amp").takes_value(true).required(true))
@@ -65,6 +71,13 @@ fn main() {
     let opts = Opts {
         sort_type: if let Some(_) = matches.subcommand_matches("linear") {
             SortType::Linear
+        } else if let Some(_) = matches.subcommand_matches("spiral") {
+            SortType::Spiral
+        } else if let Some(matches) = matches.subcommand_matches("circle") {
+            SortType::Circle {
+                cx: matches.value_of("cx").unwrap().parse().unwrap(),
+                cy: matches.value_of("cy").unwrap().parse().unwrap(),
+            }
         } else if let Some(matches) = matches.subcommand_matches("sine") {
             SortType::Sine {
                 amp: matches.value_of("amp").unwrap().parse().unwrap(),
